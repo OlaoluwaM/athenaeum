@@ -1,0 +1,111 @@
+cabal-version: 1.12
+
+-- This file has been generated from package.yaml by hpack version 0.35.2.
+--
+-- see: https://github.com/sol/hpack
+
+name:           athenaeum
+version:        0.1.0.0
+description:    Please see the README on GitHub at <https://github.com/OlaoluwaM/athenaeum#readme>
+homepage:       https://github.com/OlaoluwaM/athenaeum#readme
+bug-reports:    https://github.com/OlaoluwaM/athenaeum/issues
+author:         Author name here
+maintainer:     example@example.com
+copyright:      2023 Author name here
+license:        BSD3
+license-file:   LICENSE
+build-type:     Simple
+extra-source-files:
+    README.md
+    CHANGELOG.md
+
+source-repository head
+  type: git
+  location: https://github.com/OlaoluwaM/athenaeum
+
+library
+  exposed-modules:
+      Basic
+      Helpers
+  other-modules:
+      Paths_athenaeum
+  hs-source-dirs:
+      src
+  default-extensions:
+      ImportQualifiedPost
+      NoStarIsType
+      LambdaCase
+      QuasiQuotes
+      OverloadedStrings
+  ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints
+  build-depends:
+      PyF
+    , base >=4.7 && <5
+    , containers
+    , mtl
+    , split
+    , text
+    , text-show
+    , time
+    , transformers
+  default-language: Haskell2010
+
+executable athenaeum-exe
+  main-is: Main.hs
+  other-modules:
+      Paths_athenaeum
+  hs-source-dirs:
+      app
+  default-extensions:
+      ImportQualifiedPost
+      NoStarIsType
+      LambdaCase
+      QuasiQuotes
+      OverloadedStrings
+  ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints -threaded -rtsopts -with-rtsopts=-N
+  build-depends:
+      PyF
+    , athenaeum
+    , base >=4.7 && <5
+    , containers
+    , mtl
+    , split
+    , text
+    , text-show
+    , time
+    , transformers
+  default-language: Haskell2010
+
+test-suite athenaeum-test
+  type: exitcode-stdio-1.0
+  main-is: Spec.hs
+  other-modules:
+      Paths_athenaeum
+  hs-source-dirs:
+      test
+  default-extensions:
+      ImportQualifiedPost
+      NoStarIsType
+      LambdaCase
+      QuasiQuotes
+      OverloadedStrings
+  ghc-options: -Wall -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints -threaded -rtsopts -with-rtsopts=-N
+  build-depends:
+      PyF
+    , athenaeum
+    , base >=4.7 && <5
+    , containers
+    , hedgehog
+    , hspec
+    , mtl
+    , split
+    , tasty
+    , tasty-discover
+    , tasty-expected-failure
+    , tasty-hedgehog
+    , tasty-hspec
+    , text
+    , text-show
+    , time
+    , transformers
+  default-language: Haskell2010
