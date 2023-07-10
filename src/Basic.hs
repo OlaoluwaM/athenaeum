@@ -1,17 +1,18 @@
 module Basic (addBook, removeBook, lookupBookByAuthor, lookupBookByISBN, lookupBookByTitle, displayBookAvailability) where
 
-import Control.Monad.Except (Except, ExceptT)
+import Control.Error (ExceptT (ExceptT), tryRight)
+import Control.Monad.Except (Except, ExceptT, liftEither)
 import Control.Monad.State
+import Control.Monad.Trans.Except (except)
+import Control.Monad.Trans.Writer
+import Data.Functor ((<&>))
 import Data.List qualified as List
 import Data.Map (Map)
 import Data.Map qualified as Map
-import Data.Maybe (fromMaybe)
 import Data.Text (Text)
-import Data.Text qualified as T
 import Data.Time
 import Helpers
 import PyF (fmt)
-import PyF qualified as Pyf
 
 data Book = Book
   { title :: Text,
@@ -112,24 +113,35 @@ displayBookAvailability bookTitle = do
 -- trackBorrower :: Library -> Patron -> Book -> Maybe LibraryEntry
 -- trackBorrower lib borrower book = (\libEntry -> libEntry{borrowedBy = borrower : borrowedBy libEntry}) <$> lookupBookByTitle lib (title book)
 
-borrowBook :: Text -> Patron -> StateT Library (ExceptT LibrarySysError IO) ()
+borrowBook :: Text -> Patron -> StateT Library (ExceptT LibrarySysError IO) Patron
 borrowBook bookTitle patron@(Patron _ _ booksBorrowed') = do
   currentLibrary <- get
-  let bookRemovalResult = evalStateT (removeBook bookTitle) currentLibrary
+  let mLibEntryOfBookToBorrow = evalStateT (fst <$> removeBook bookTitle) currentLibrary
+  --   let updatedLibraryAndLibEntryOfBook = mLibEntryOfBookToBorrow >>= Right . trackBorrower currentLibrary
 
-  let foo = case bookRemovalResult of
-        Right _ -> undefined
-        Left _ -> undefined
+  let bar = (tryRight $ mLibEntryOfBookToBorrow <&> trackTheBorrower currentLibrary :: ExceptT LibrarySysError IO (Library, LibraryEntry))
 
-  --   let (updatedLibrary, msg) = case bookAvailabilityStatus of
-  -- -- Right bookLibEntry -> (incrementBookCopiesCount currentLibrary, newCopyMsg)
-  -- Left _ -> (addNewBookToLibrary currentLibrary, newBookMsg)
+  --   let (updatedLibrary, messageAction) = case bar of
+  --         Right (updatedLib, libEntryOfBookToBorrow) -> (updatedLib, trackTheBorrowedBook libEntryOfBookToBorrow)
+  --         Left _ -> (currentLibrary, return (patron, ""))
+
+  --   put updatedLibrary
+  --   liftIO messageAction
   undefined
   where
+    borrowBook' libEntryForBook = undefined
+    trackTheBorrower lib bookLibEntry' = (Map.adjust (const $ bookLibEntry' {borrowedBy = patron : borrowedBy bookLibEntry'}) bookTitle lib, bookLibEntry')
+    trackTheBorrowedBook (LibraryEntry bookInfo' _ _) = do
+      currentDay <- getDay
+      let returnDeadline' = addDays 4 currentDay
 
--- borrowBook' libEntryForBook = undefined
--- trackBorrower bookLibEntry' currentBorrowers = Map.adjust (const $ bookLibEntry' {borrowedBy = patron : currentBorrowers}) bookTitle
--- trackBorrowedBook = patron {booksBorrowed = (BorrowedBook {infoOfBorrowedBook=bookInfo', returnDeadline }) : booksBorrowed'}
+      let updatedPatron = patron {booksBorrowed = (BorrowedBook {infoOfBorrowedBook = bookInfo', borrowDate = currentDay, returnDeadline = returnDeadline'}) : booksBorrowed'}
+
+      let textCurrentDay = tshow currentDay
+      let textReturnDeadline = tshow returnDeadline'
+
+      let returnMsg = [fmt|You have borrowed the book '{bookTitle}' on {textCurrentDay}, to be returned on {textReturnDeadline}|]
+      return (updatedPatron, returnMsg :: Text)
 
 -- borrow :: Library -> Book -> Patron -> (Patron, Library)
 -- borrow lib book borrower = case lookupBookByTitle lib (title book) of
@@ -166,6 +178,9 @@ lookupBookByBookProperty bookFieldLabel errorMsg bookPropertyToSearchBy = do
   where
     bookPropertyLookup (_, LibraryEntry bookInfo' _ _) = bookPropertyToSearchBy == bookFieldLabel bookInfo'
     addErrorMsg = maybeToEither . BookNotFound . Just . ErrorContext
+
+getDay :: IO Day
+getDay = utctDay <$> getCurrentTime
 
 -- ---------------------------------- Main ---------------------------------- --
 firstBookInLibrary :: Book

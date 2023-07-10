@@ -42,6 +42,7 @@ library
       PyF
     , base >=4.7 && <5
     , containers
+    , errors
     , mtl
     , split
     , text
@@ -68,6 +69,7 @@ executable athenaeum-exe
     , athenaeum
     , base >=4.7 && <5
     , containers
+    , errors
     , mtl
     , split
     , text
@@ -95,6 +97,7 @@ test-suite athenaeum-test
     , athenaeum
     , base >=4.7 && <5
     , containers
+    , errors
     , hedgehog
     , hspec
     , mtl

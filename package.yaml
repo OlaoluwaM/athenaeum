@@ -29,6 +29,7 @@ dependencies:
   - time
   - PyF
   - text-show
+  - errors
 
 ghc-options:
   - -Wall
