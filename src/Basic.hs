@@ -108,19 +108,23 @@ displayBookAvailability bookTitle = do
   return bookAvailabilityMsg
 
 borrowBook :: (Day, Integer) -> Text -> Patron -> BasicStack Patron
-borrowBook (currentDay, randomOffsetForDeadline) bookTitle patron@(Patron _ _ booksBorrowed') = do
+borrowBook (currentDay, randomOffsetForDeadline) bookTitle patron = do
   _ <- removeBook bookTitle
   currentLibrary <- get
   libraryEntry <- lift $ lookupBookByTitle currentLibrary bookTitle
 
   modify (`trackTheBorrower` libraryEntry)
 
-  return $ trackTheBorrowedBook libraryEntry
+  return $ trackTheBorrowedBook patron libraryEntry
   where
-    trackTheBorrower lib bookLibEntry@(LibraryEntry (Book bookTitle' _ _) _ patrons) = Map.adjust (const $ bookLibEntry {borrowedBy = patron : patrons}) bookTitle' lib
-    trackTheBorrowedBook (LibraryEntry bookInfo' _ _) =
+    trackTheBorrower lib bookLibEntry@(LibraryEntry (Book bookTitle' _ _) _ patrons) =
+      Map.adjust (const $ bookLibEntry {borrowedBy = patron : patrons}) bookTitle' lib
+
+    trackTheBorrowedBook patron'@(Patron _ _ borrowedBooks') (LibraryEntry bookInfo' _ _) =
       let returnDeadline' = addDays randomOffsetForDeadline currentDay
-       in patron {booksBorrowed = (BorrowedBook {infoOfBorrowedBook = bookInfo', borrowDate = currentDay, returnDeadline = returnDeadline'}) : booksBorrowed'}
+       in patron'
+            { booksBorrowed = (BorrowedBook {infoOfBorrowedBook = bookInfo', borrowDate = currentDay, returnDeadline = returnDeadline'}) : borrowedBooks'
+            }
 
 returnBook :: Patron -> Book -> BasicStack Patron
 returnBook patron@(Patron _ _ borrowedBooks) borrowedBook@(Book bookTitle _ _) = do
