@@ -1,11 +1,7 @@
-module Basic (addBook, removeBook, lookupBookByAuthor, lookupBookByISBN, lookupBookByTitle, displayBookAvailability) where
+module Basic (addBook, removeBook, lookupBookByAuthor, lookupBookByISBN, lookupBookByTitle, displayBookAvailability, borrowBook, returnBook) where
 
-import Control.Error (ExceptT (ExceptT), tryRight)
-import Control.Monad.Except (Except, ExceptT, liftEither)
+import Control.Monad.Except (MonadError (throwError))
 import Control.Monad.State
-import Control.Monad.Trans.Except (except)
-import Control.Monad.Trans.Writer
-import Data.Functor ((<&>))
 import Data.List qualified as List
 import Data.Map (Map)
 import Data.Map qualified as Map
@@ -15,30 +11,30 @@ import Helpers
 import PyF (fmt)
 
 data Book = Book
-  { title :: Text
-  , author :: Text
-  , isbn :: Text
+  { title :: Text,
+    author :: Text,
+    isbn :: Text
   }
   deriving (Show, Eq)
 
 data BorrowedBook = BorrowedBook
-  { infoOfBorrowedBook :: Book
-  , returnDeadline :: Day
-  , borrowDate :: Day
+  { infoOfBorrowedBook :: Book,
+    returnDeadline :: Day,
+    borrowDate :: Day
   }
   deriving (Show, Eq)
 
 data Patron = Patron
-  { name :: Text
-  , cardNumber :: Integer
-  , booksBorrowed :: [BorrowedBook]
+  { name :: Text,
+    cardNumber :: Integer,
+    booksBorrowed :: [BorrowedBook]
   }
   deriving (Show, Eq)
 
 data LibraryEntry = LibraryEntry
-  { bookInfo :: Book
-  , copies :: Integer
-  , borrowedBy :: [Patron]
+  { bookInfo :: Book,
+    copies :: Integer,
+    borrowedBy :: [Patron]
   }
   deriving (Show, Eq)
 
@@ -65,12 +61,12 @@ addBook newBook@(Book newBookTitle _ _) = do
 
   put updatedLibrary
   return msg
- where
-  incrementBookCopiesCount = Map.adjust (modifyBookCopyCount (+ 1)) newBookTitle
-  addNewBookToLibrary = Map.insert newBookTitle LibraryEntry{bookInfo = newBook, copies = 1, borrowedBy = []}
+  where
+    incrementBookCopiesCount = Map.adjust (modifyBookCopyCount (+ 1)) newBookTitle
+    addNewBookToLibrary = Map.insert newBookTitle LibraryEntry {bookInfo = newBook, copies = 1, borrowedBy = []}
 
-  newBookMsg = [fmt|Added the book '{newBookTitle}' to the library!|]
-  newCopyMsg = [fmt|Added a new copy of the book '{newBookTitle}' to the library!|]
+    newBookMsg = [fmt|Added the book '{newBookTitle}' to the library!|]
+    newCopyMsg = [fmt|Added a new copy of the book '{newBookTitle}' to the library!|]
 
 lookupBookByTitle :: Library -> Text -> Either LibrarySysError LibraryEntry
 lookupBookByTitle lib bookTitle = lookupBookByTitleIncludingBooksWithoutCopies lib bookTitle >>= hideBooksWithNoCopies
@@ -91,12 +87,12 @@ removeBook bookTitle = do
 
   put updatedLibrary
   return msg
- where
-  decrementBookCopiesCount = Map.adjust (modifyBookCopyCount (subtract 1)) bookTitle
-  deleteBookFromLibrary = Map.delete bookTitle
+  where
+    decrementBookCopiesCount = Map.adjust (modifyBookCopyCount (subtract 1)) bookTitle
+    deleteBookFromLibrary = Map.delete bookTitle
 
-  copyRemovedMsg = [fmt|Removed a copy of the book '{bookTitle}'|]
-  bookDeletedMsg = [fmt|Deleted the book '{bookTitle}' from library|]
+    copyRemovedMsg = [fmt|Removed a copy of the book '{bookTitle}'|]
+    bookDeletedMsg = [fmt|Deleted the book '{bookTitle}' from library|]
 
 displayBookAvailability :: Text -> BasicStack Text
 displayBookAvailability bookTitle = do
@@ -118,37 +114,45 @@ borrowBook (currentDay, randomOffsetForDeadline) bookTitle patron@(Patron _ _ bo
   libraryEntry <- lift $ lookupBookByTitle currentLibrary bookTitle
 
   modify (`trackTheBorrower` libraryEntry)
-  let updatedPatron = trackTheBorrowedBook libraryEntry
 
-  return updatedPatron
- where
-  trackTheBorrower lib bookLibEntry' = Map.adjust (const $ bookLibEntry'{borrowedBy = patron : borrowedBy bookLibEntry'}) bookTitle lib
-  trackTheBorrowedBook (LibraryEntry bookInfo' _ _) =
-    let returnDeadline' = addDays randomOffsetForDeadline currentDay
-     in patron{booksBorrowed = (BorrowedBook{infoOfBorrowedBook = bookInfo', borrowDate = currentDay, returnDeadline = returnDeadline'}) : booksBorrowed'}
+  return $ trackTheBorrowedBook libraryEntry
+  where
+    trackTheBorrower lib bookLibEntry@(LibraryEntry (Book bookTitle' _ _) _ patrons) = Map.adjust (const $ bookLibEntry {borrowedBy = patron : patrons}) bookTitle' lib
+    trackTheBorrowedBook (LibraryEntry bookInfo' _ _) =
+      let returnDeadline' = addDays randomOffsetForDeadline currentDay
+       in patron {booksBorrowed = (BorrowedBook {infoOfBorrowedBook = bookInfo', borrowDate = currentDay, returnDeadline = returnDeadline'}) : booksBorrowed'}
 
 returnBook :: Patron -> Book -> BasicStack Patron
-returnBook patron@(Patron _ _ borrowedBooks) borrowedBook = do
+returnBook patron@(Patron _ _ borrowedBooks) borrowedBook@(Book bookTitle _ _) = do
   currentLibrary <- get
-  let listOfBorrowedBooks = map infoOfBorrowedBook borrowedBooks
-  guard (borrowedBook `elem` listOfBorrowedBooks)
-  undefined
+  let listOfBooksBorrowedByPatron = map infoOfBorrowedBook borrowedBooks
+  when (borrowedBook `elem` listOfBooksBorrowedByPatron) $ throwError $ CustomError ErrorContext {context = "Oops, looks like you weren't the one who borrowed this book"}
 
--- returnBook :: Library -> Book -> Patron -> (Patron, Library)
--- returnBook lib book borrower =
---     if List.null (booksBorrowed borrower) then (borrower, lib) else (borrower{booksBorrowed = List.filter (\(BorrowedBook bk) -> title book /= title bk) $ booksBorrowed borrower}, addBook lib book)
+  borrowedBookLibEntry <- lift $ lookupBookByTitle currentLibrary bookTitle
+  modify (`unTrackTheBorrower` borrowedBookLibEntry)
+
+  let updatedPatron = unTrackTheBorrowedBook patron borrowedBookLibEntry
+
+  return updatedPatron
+  where
+    unTrackTheBorrower lib bookLibEntry@(LibraryEntry (Book bookTitle' _ _) _ patrons) =
+      Map.adjust (const $ bookLibEntry {borrowedBy = filter (/= patron) patrons}) bookTitle' lib
+
+    unTrackTheBorrowedBook (Patron _ _ borrowedBooks') (LibraryEntry bookInfo' _ _) =
+      let filterFn (BorrowedBook borrowedBookInfo _ _) = borrowedBookInfo /= bookInfo'
+       in patron {booksBorrowed = filter filterFn borrowedBooks'}
 
 -- -------------------------- Athenaeum Basic API Helpers ------------------------- --
 modifyBookCopyCount :: (Integer -> Integer) -> LibraryEntry -> LibraryEntry
-modifyBookCopyCount copyModFn libBookEntry@(LibraryEntry _ currentCopyCount _) = libBookEntry{copies = updatedCopyCount}
- where
-  updatedCopyCount = let newBookCopyCount = copyModFn currentCopyCount in max newBookCopyCount 0
+modifyBookCopyCount copyModFn libBookEntry@(LibraryEntry _ currentCopyCount _) = libBookEntry {copies = updatedCopyCount}
+  where
+    updatedCopyCount = let newBookCopyCount = copyModFn currentCopyCount in max newBookCopyCount 0
 
 lookupBookByTitleIncludingBooksWithoutCopies :: Library -> Text -> Either LibrarySysError LibraryEntry
 lookupBookByTitleIncludingBooksWithoutCopies lib bookTitle = addErrorMsg (Map.lookup bookTitle lib)
- where
-  addErrorMsg = maybeToEither (BookNotFound $ Just $ ErrorContext errorMsg)
-  errorMsg = [fmt|Could not find book with title '{bookTitle}'|]
+  where
+    addErrorMsg = maybeToEither (BookNotFound $ Just $ ErrorContext errorMsg)
+    errorMsg = [fmt|Could not find book with title '{bookTitle}'|]
 
 hideBooksWithNoCopies :: LibraryEntry -> Either LibrarySysError LibraryEntry
 hideBooksWithNoCopies libEntry@(LibraryEntry (Book bookTitle _ _) copiesCount _)
@@ -158,19 +162,25 @@ hideBooksWithNoCopies libEntry@(LibraryEntry (Book bookTitle _ _) copiesCount _)
 lookupBookByBookProperty :: (Eq a) => Library -> (Book -> a) -> Text -> a -> Either LibrarySysError LibraryEntry
 lookupBookByBookProperty lib bookFieldLabel errorMsg bookPropertyToSearchBy =
   addErrorMsg errorMsg (List.find bookPropertyLookup (Map.toList lib)) >>= hideBooksWithNoCopies . snd
- where
-  bookPropertyLookup (_, LibraryEntry bookInfo' _ _) = bookPropertyToSearchBy == bookFieldLabel bookInfo'
-  addErrorMsg = maybeToEither . BookNotFound . Just . ErrorContext
+  where
+    bookPropertyLookup (_, LibraryEntry bookInfo' _ _) = bookPropertyToSearchBy == bookFieldLabel bookInfo'
+    addErrorMsg = maybeToEither . BookNotFound . Just . ErrorContext
 
 getDay :: IO Day
 getDay = utctDay <$> getCurrentTime
 
 -- ---------------------------------- Main ---------------------------------- --
 firstBookInLibrary :: Book
-firstBookInLibrary = Book{title = "Production Haskell", author = "Matt Parsons", isbn = "ISBN-13: 978-3-16-148410-0"}
+firstBookInLibrary = Book {title = "Production Haskell", author = "Matt Parsons", isbn = "ISBN-13: 978-3-16-148410-0"}
 
 library :: Library
 library = Map.empty
+
+main :: IO ()
+main = do
+  currentDay <- getDay
+
+  undefined
 
 -- -- Not sure why `stack runghc Solution.hs` isn't working, but using `stack ghci` and running main interactively does the trick
 -- main :: IO ()
