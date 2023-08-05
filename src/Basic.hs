@@ -1,8 +1,16 @@
-module Basic (addBook, removeBook, lookupBookByAuthor, lookupBookByISBN, lookupBookByTitle, displayBookAvailability) where
+{-# OPTIONS_GHC -Wno-unused-top-binds #-}
 
--- There seems to be a lot of nuance here, specifically with the borrow and return logic. I am not sure the current model suffices as an efficient means to handle all the edge cases without paying an exorbitant price in complexity. Thus, I propose a different model for the library, a nested map with keys referencing the different sections of the libraries capabilities
-
--- The first would the usual title to libEntry map, the next addition will be a borrow log of sorts. No longer shall patrons need to keep track of the borrowing. Instead it will all be recorded by the library in the second entry. Though this would require that patrons be registered so that a borrow log might be created them for them
+module Basic (
+  addBook,
+  removeBook,
+  lookupBookByAuthor,
+  lookupBookByISBN,
+  lookupBookByTitle,
+  displayBookAvailability,
+  borrowBook,
+  returnBook,
+  registerPatron,
+) where
 
 import Control.Error.Util (note)
 import Control.Monad.Except (ExceptT, MonadError (throwError), liftEither, runExceptT)
@@ -28,7 +36,7 @@ data Book = Book
   , author :: Text
   , isbn :: Text
   }
-  deriving (Show, Eq)
+  deriving (Show, Eq, Ord)
 
 data BorrowedBook = BorrowedBook
   { infoOfBorrowedBook :: Book
@@ -147,16 +155,19 @@ registerPatron patronToBeRegistered@(Patron patronName patronIdNumber) = do
   isAlreadyRegistered registeredPatronId = isJust . Map.lookup registeredPatronId
 
 -- You can't borrow the same book twice
--- Create a utility to check if a RegisteredPatron borrowed a certain book. Error if so, success if otherwise
 borrowBook :: Word -> Day -> Text -> RegisteredPatron -> BasicStack RegisteredPatron
 borrowBook randomOffsetForDeadline currentDay bookTitle registeredPatron@(RegisteredPatron (Patron patronName _) patronRegistrationID) = do
-  currentLib@(Library currBookShelf currBorrowLog) <- get
-  (LibraryEntry bookInfo' _) <- lift $ liftEither $ lookupBookByTitle currBookShelf bookTitle
+  currentLib@(Library currentBookShelf currentBorrowLog) <- get
+
+  let alreadyBorrowedErrorMsg = [fmt|{patronName} has already borrowed the book '{bookTitle}'|]
+  when (hasAlreadyBorrowedBook currentLib bookTitle registeredPatron) $ throwError $ PastDue $ Just $ ErrorContext alreadyBorrowedErrorMsg
+
+  (LibraryEntry bookInfo' _) <- lift $ liftEither $ lookupBookByTitle currentBookShelf bookTitle
 
   let returnDeadline' = calcReturnDeadline currentDay
-  let updatedBorrowLog = trackBookBorrowing patronRegistrationID bookInfo' currentDay returnDeadline' currBorrowLog
+  let updatedBorrowLog = trackBookBorrowing patronRegistrationID bookInfo' currentDay returnDeadline' currentBorrowLog
 
-  put currentLib{getBookShelf = decrementBookCopiesCount bookTitle currBookShelf, getBorrowLog = updatedBorrowLog}
+  put currentLib{getBookShelf = decrementBookCopiesCount bookTitle currentBookShelf, getBorrowLog = updatedBorrowLog}
 
   writer (registeredPatron, [[fmt|{patronName} just borrowed the book '{bookTitle}'. Return deadline is {tshow returnDeadline'}|]])
  where
@@ -166,33 +177,38 @@ borrowBook randomOffsetForDeadline currentDay bookTitle registeredPatron@(Regist
 
   calcReturnDeadline = addDays (toInteger randomOffsetForDeadline)
 
--- returnBook :: Day -> Book -> Patron -> BasicStack Patron
--- returnBook currentDay borrowedBook@(Book bookTitle _ _) patron@(Patron patronName _ borrowedBooks) = do
---   let maybeBorrowedBook = List.find (\(BorrowedBook bookInfo' _ _) -> bookInfo' == borrowedBook) borrowedBooks
---   (BorrowedBook _ returnDeadline' _) <- lift $ liftEither $ maybeToEither (CustomError (ErrorContext wrongBorrowerMsg)) maybeBorrowedBook
+returnBook :: Day -> Book -> RegisteredPatron -> BasicStack RegisteredPatron
+returnBook currentDay borrowedBook@(Book bookTitle _ _) registeredPatron@(RegisteredPatron (Patron patronName _) patronRegistrationID) = do
+  currentLib@(Library _ currentBorrowLog) <- get
 
---   borrowedBookLibEntry <- addBook borrowedBook
---   let updatedPatron = unTrackTheBorrowedBook patron borrowedBookLibEntry
+  let wrongBorrowerError = CustomError $ ErrorContext [fmt|{patronName} has not borrowed the book '{bookTitle}'|]
+  (BorrowedBook _ returnDeadline' _) <- lift $ liftEither $ note wrongBorrowerError (getBorrowedBook currentBorrowLog borrowedBook registeredPatron)
 
---   modify (unTrackTheBorrower bookTitle updatedPatron)
+  let updatedBorrowLog = unTrackBookBorrowing patronRegistrationID borrowedBook currentBorrowLog
+  _ <- censor (const []) (addBook borrowedBook)
 
---   let deadlineOffset = diffDays returnDeadline' currentDay
+  updatedBookShelf <- gets getBookShelf
+  put currentLib{getBookShelf = updatedBookShelf, getBorrowLog = updatedBorrowLog}
 
---   when (deadlineOffset < 0) $ throwError $ PastDue $ Just $ ErrorContext [fmt|You are returning this book {abs deadlineOffset} days past due!|]
+  let deadlineOffset = diffDays returnDeadline' currentDay
+  when (deadlineOffset < 0) $ throwError $ PastDue $ Just $ ErrorContext [fmt|You are returning this book {abs deadlineOffset} days past due!|]
 
---   writer (updatedPatron, [[fmt|{patronName} returned the book '{bookTitle}' {deadlineOffset} days before due|]])
---  where
---   unTrackTheBorrower bookTitle' (Patron _ targetBorrowersCardNum _) =
---     let unTrackFn (Patron _ currentPatronCardNum _) = currentPatronCardNum /= targetBorrowersCardNum
---      in Map.adjust (\bookLibEntry@(LibraryEntry _ _ borrowers) -> bookLibEntry{borrowedBy = filter unTrackFn borrowers}) bookTitle'
+  writer (registeredPatron, [[fmt|{patronName} returned the book '{bookTitle}' {deadlineOffset} days before due|]])
+ where
+  unTrackBookBorrowing borrowerID bookToReturn =
+    let filterFnForBookToReturn (BorrowedBook aBorrowedBook _ _) = aBorrowedBook /= bookToReturn
+     in Map.adjust (Set.filter filterFnForBookToReturn) borrowerID
 
---   unTrackTheBorrowedBook borrower@(Patron _ _ borrowedBooks') (LibraryEntry bookInfo' _ _) =
---     let filterFn (BorrowedBook borrowedBookInfo _ _) = borrowedBookInfo /= bookInfo'
---      in borrower{booksBorrowed = filter filterFn borrowedBooks'}
-
---   wrongBorrowerMsg = "Oops, looks like you weren't the one who borrowed this book" :: Text
+  getBorrowedBook borrowLog targetBook (RegisteredPatron _ registrationID') =
+    let patronsBorrowedBooks = Set.toList $ Map.findWithDefault Set.empty registrationID' borrowLog
+     in List.find (\(BorrowedBook aBorrowedBook _ _) -> aBorrowedBook == targetBook) patronsBorrowedBooks
 
 -- -------------------------- Athenaeum Basic API Helpers ------------------------- --
+hasAlreadyBorrowedBook :: Library -> Text -> RegisteredPatron -> Bool
+hasAlreadyBorrowedBook (Library _ borrowLog) bookTitle (RegisteredPatron _ registrationID') =
+  let patronsBorrowedBooks = Map.findWithDefault Set.empty registrationID' borrowLog
+   in Set.member bookTitle $ Set.map (title . infoOfBorrowedBook) patronsBorrowedBooks
+
 incrementBookCopiesCount :: Text -> BookShelf -> BookShelf
 incrementBookCopiesCount = Map.adjust (modifyBookCopyCount (+ 1))
 
@@ -237,87 +253,85 @@ getLibSysErrorContext = \case
 getDay :: IO Day
 getDay = utctDay <$> getCurrentTime
 
--- bookOne :: Book
--- bookOne = Book{title = "Production Haskell", author = "Matt Parsons", isbn = "ISBN-13: 978-3-16-148410-0"}
+bookOne :: Book
+bookOne = Book{title = "Production Haskell", author = "Matt Parsons", isbn = "ISBN-13: 978-3-16-148410-0"}
 
--- bookTwo :: Book
--- bookTwo = Book{title = "Simple Haskell", author = "Marco Sampellegrini", isbn = "ISBN-13: 978-0-262-13472-9"}
+bookTwo :: Book
+bookTwo = Book{title = "Simple Haskell", author = "Marco Sampellegrini", isbn = "ISBN-13: 978-0-262-13472-9"}
 
--- bookThree :: Book
--- bookThree = Book{title = "Optics By Example", author = "Chris Penner", isbn = "ISBN-13: 978-1-566-19237-5"}
+bookThree :: Book
+bookThree = Book{title = "Optics By Example", author = "Chris Penner", isbn = "ISBN-13: 978-1-566-19237-5"}
 
--- patronOne :: Patron
--- patronOne = Patron{name = "Michael Williams", cardNumber = 67890, booksBorrowed = []}
+patronOne :: Patron
+patronOne = Patron{name = "Michael Williams", idNumber = 67890}
 
--- patronTwo :: Patron
--- patronTwo = Patron{name = "Olivia Wilson", cardNumber = 89012, booksBorrowed = []}
+patronTwo :: Patron
+patronTwo = Patron{name = "Olivia Wilson", idNumber = 89012}
 
--- library :: Library
--- library = Map.empty
+patronThree :: Patron
+patronThree = Patron{name = "Jessica Horn", idNumber = 89012}
 
--- programOne :: BasicStack ()
--- programOne = do
---   let firstBookTitle = title bookOne
---   let secondBookTitle = title bookTwo
---   let thirdBookTitle = title bookThree
+library :: Library
+library = Library{getBookShelf = Map.empty, getBorrowLog = Map.empty}
 
---   tell [[fmt|Stocking the book {firstBookTitle}...|]]
---   _ <- displayBookAvailability firstBookTitle
---   _ <- displayBookAvailability secondBookTitle
---   _ <- displayBookAvailability thirdBookTitle
---   _ <- addBook bookOne
---   _ <- addBook bookOne
---   _ <- displayBookAvailability firstBookTitle
---   _ <- addBook bookTwo
---   _ <- addBook bookTwo
---   _ <- addBook bookTwo
---   _ <- displayBookAvailability secondBookTitle
---   _ <- addBook bookThree
---   _ <- addBook bookThree
---   _ <- addBook bookThree
---   _ <- addBook bookThree
---   _ <- displayBookAvailability thirdBookTitle
---   _ <- removeBook thirdBookTitle
---   _ <- removeBook firstBookTitle
---   _ <- displayBookAvailability firstBookTitle
---   _ <- displayBookAvailability thirdBookTitle
+setup :: BasicStack (RegisteredPatron, RegisteredPatron, RegisteredPatron)
+setup = do
+  let firstBookTitle = title bookOne
+  let secondBookTitle = title bookTwo
+  let thirdBookTitle = title bookThree
 
---   tell ["Book Stocking complete"]
+  tell [[fmt|Stocking the book {firstBookTitle}...|]]
+  _ <- displayBookAvailability firstBookTitle
+  _ <- displayBookAvailability secondBookTitle
+  _ <- displayBookAvailability thirdBookTitle
+  _ <- addBook bookOne
+  _ <- addBook bookOne
+  _ <- displayBookAvailability firstBookTitle
+  _ <- addBook bookTwo
+  _ <- addBook bookTwo
+  _ <- addBook bookTwo
+  _ <- displayBookAvailability secondBookTitle
+  _ <- addBook bookThree
+  _ <- addBook bookThree
+  _ <- addBook bookThree
+  _ <- addBook bookThree
+  _ <- displayBookAvailability thirdBookTitle
+  _ <- removeBook thirdBookTitle
+  _ <- removeBook firstBookTitle
+  _ <- displayBookAvailability firstBookTitle
+  _ <- displayBookAvailability thirdBookTitle
+  _ <- addBook bookOne
+  _ <- addBook bookTwo
+  _ <- addBook bookThree
 
--- programTwo :: Day -> BasicStack ()
--- programTwo today = do
---   let firstBookTitle = title bookOne
---   let secondBookTitle = title bookTwo
---   let thirdBookTitle = title bookThree
+  tell ["Book Stocking complete", "Registering Patrons..."]
 
---   _ <- censor (const []) programOne
---   _ <- displayBookAvailability firstBookTitle
---   _ <- displayBookAvailability secondBookTitle
---   _ <- displayBookAvailability thirdBookTitle
---   updatedPatronOne <- borrowBook 10 today firstBookTitle patronOne >>= borrowBook 5 today secondBookTitle >>= returnBook today bookOne
---   tell [tshow updatedPatronOne]
+  registeredPatrons <- traverseTupleThree registerPatron (patronOne, patronTwo, patronThree)
 
--- main :: IO ()
--- main = do
---   print "Running Program 1...."
---   let programOneOutput = let program = evalState (runExceptT (runWriterT programOne)) library in either getLibSysErrorContext (intercalate "\n" . snd) program
---   TIO.putStrLn programOneOutput
---   TIO.putStrLn "Program 1 complete\n\n"
+  tell ["Patron registration complete!"]
 
---   today <- getDay
---   print "Running program 2...."
---   let (programTwoOutput, finalLibState) = runState (runExceptT (runWriterT $ programTwo today)) library
---   print finalLibState
+  return registeredPatrons
 
---   let serializedProgramTwoOutput = either getLibSysErrorContext (intercalate "\n" . snd) programTwoOutput
---   TIO.putStrLn serializedProgramTwoOutput
+program :: Day -> BasicStack ()
+program today = do
+  let firstBookTitle = title bookOne
+  let secondBookTitle = title bookTwo
+  let thirdBookTitle = title bookThree
 
--- TIO.putStrLn "Program 2 complete\n\n"
+  (registeredPatronOne, _, _) <- setup
+  _ <- displayBookAvailability firstBookTitle
+  _ <- displayBookAvailability secondBookTitle
+  _ <- displayBookAvailability thirdBookTitle
 
--- -- Not sure why `stack runghc Solution.hs` isn't working, but using `stack ghci` and running main interactively does the trick
--- main :: IO ()
--- main = do
---     let r = removeBookFromLibrary (addBook libraryFirstBranch firstBookInLibrary) firstBookInLibrary
---     let g = removeBookFromLibrary (addBook (addBook (addBook libraryFirstBranch firstBookInLibrary) firstBookInLibrary) firstBookInLibrary) firstBookInLibrary
---     let o = Patron{name = "Ola", cardNumber = 6162633, booksBorrowed = [BorrowedBook firstBookInLibrary]}
---     print (returnBook g firstBookInLibrary o)
+  updatedRegisteredPatronOne <- borrowBook 10 today firstBookTitle registeredPatronOne >>= borrowBook 5 today secondBookTitle
+  tell []
+
+main :: IO ()
+main = do
+  today <- getDay
+  let (programOutput, finalLibState) = runState (runExceptT (runWriterT $ program today)) library
+
+  let serializedProgramTwoOutput = either getLibSysErrorContext (intercalate "\n" . snd) programOutput
+  TIO.putStrLn serializedProgramTwoOutput
+  TIO.putStrLn "Program complete\n\n"
+  print finalLibState
