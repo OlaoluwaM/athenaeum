@@ -1,16 +1,4 @@
-{-# OPTIONS_GHC -Wno-unused-top-binds #-}
-
-module Basic (
-  addBook,
-  removeBook,
-  lookupBookByAuthor,
-  lookupBookByISBN,
-  lookupBookByTitle,
-  displayBookAvailability,
-  borrowBook,
-  returnBook,
-  registerPatron,
-) where
+module Basic where
 
 import Control.Error.Util (note)
 import Control.Monad.Except (ExceptT, MonadError (throwError), liftEither, runExceptT)
@@ -26,7 +14,8 @@ import Data.Text (Text, intercalate)
 import Data.Text.IO qualified as TIO
 import Data.Time
 import Data.UUID (UUID)
-import Helpers
+import Helpers (V3)
+import Helpers qualified
 import PyF (fmt)
 
 type RegistrationID = UUID
@@ -141,7 +130,7 @@ displayBookAvailability bookTitle = do
 registerPatron :: Patron -> BasicStack RegisteredPatron
 registerPatron patronToBeRegistered@(Patron patronName patronIdNumber) = do
   currentLib@(Library _ borrowLog) <- get
-  let generatedRegistrationID = randomUUID patronIdNumber
+  let generatedRegistrationID = Helpers.randomUUID patronIdNumber
 
   if isAlreadyRegistered generatedRegistrationID borrowLog
     then tell [[fmt|{patronName} has already been registered|]]
@@ -169,7 +158,7 @@ borrowBook randomOffsetForDeadline currentDay bookTitle registeredPatron@(Regist
 
   put currentLib{getBookShelf = decrementBookCopiesCount bookTitle currentBookShelf, getBorrowLog = updatedBorrowLog}
 
-  writer (registeredPatron, [[fmt|{patronName} just borrowed the book '{bookTitle}'. Return deadline is {tshow returnDeadline'}|]])
+  writer (registeredPatron, [[fmt|{patronName} just borrowed the book '{bookTitle}'. Return deadline is {Helpers.tshow returnDeadline'}|]])
  where
   trackBookBorrowing borrowerID bookToBorrow borrowDay returnDeadline' =
     let borrowedBook = BorrowedBook{infoOfBorrowedBook = bookToBorrow, returnDeadline = returnDeadline', borrowDate = borrowDay}
@@ -274,7 +263,7 @@ patronThree = Patron{name = "Jessica Horn", idNumber = 89012}
 library :: Library
 library = Library{getBookShelf = Map.empty, getBorrowLog = Map.empty}
 
-setup :: BasicStack (RegisteredPatron, RegisteredPatron, RegisteredPatron)
+setup :: BasicStack (V3 RegisteredPatron)
 setup = do
   let firstBookTitle = title bookOne
   let secondBookTitle = title bookTwo
@@ -306,30 +295,30 @@ setup = do
 
   tell ["Book Stocking complete", "Registering Patrons..."]
 
-  registeredPatrons <- traverseTupleThree registerPatron (patronOne, patronTwo, patronThree)
+  registeredPatrons <- traverse registerPatron (Helpers.V3 patronOne patronTwo patronThree)
 
   tell ["Patron registration complete!"]
 
   return registeredPatrons
 
-program :: Day -> BasicStack ()
-program today = do
+happyPathProgram :: Day -> BasicStack ()
+happyPathProgram today = do
   let firstBookTitle = title bookOne
   let secondBookTitle = title bookTwo
   let thirdBookTitle = title bookThree
 
-  (registeredPatronOne, _, _) <- setup
+  (Helpers.V3 registeredPatronOne _ _) <- setup
   _ <- displayBookAvailability firstBookTitle
   _ <- displayBookAvailability secondBookTitle
   _ <- displayBookAvailability thirdBookTitle
 
-  updatedRegisteredPatronOne <- borrowBook 10 today firstBookTitle registeredPatronOne >>= borrowBook 5 today secondBookTitle
-  tell []
+  _ <- borrowBook 10 today firstBookTitle registeredPatronOne >>= borrowBook 5 today secondBookTitle
+  return ()
 
 main :: IO ()
 main = do
   today <- getDay
-  let (programOutput, finalLibState) = runState (runExceptT (runWriterT $ program today)) library
+  let (programOutput, finalLibState) = runState (runExceptT (runWriterT $ happyPathProgram today)) library
 
   let serializedProgramTwoOutput = either getLibSysErrorContext (intercalate "\n" . snd) programOutput
   TIO.putStrLn serializedProgramTwoOutput

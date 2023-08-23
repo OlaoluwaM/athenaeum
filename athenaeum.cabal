@@ -84,8 +84,10 @@ executable athenaeum-exe
 
 test-suite athenaeum-test
   type: exitcode-stdio-1.0
-  main-is: Spec.hs
+  main-is: Driver.hs
   other-modules:
+      BasicTest
+      Helpers
       Paths_athenaeum
   hs-source-dirs:
       test

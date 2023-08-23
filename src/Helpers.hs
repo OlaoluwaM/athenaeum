@@ -1,9 +1,13 @@
+{-# LANGUAGE DeriveTraversable #-}
+
 module Helpers where
 
 import Data.Text (Text)
 import Data.UUID (UUID)
 import System.Random (mkStdGen, random)
 import TextShow (fromString, toText)
+
+data V3 a = V3 a a a deriving (Eq, Show, Read, Ord, Functor, Foldable, Traversable)
 
 tshow :: (Show a) => a -> Text
 tshow = toText . fromString . show
