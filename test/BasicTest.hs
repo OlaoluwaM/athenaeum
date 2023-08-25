@@ -4,13 +4,15 @@ import Basic
 import Control.Monad.Except
 import Control.Monad.State (runState)
 import Control.Monad.Writer
+import Data.Either (isLeft, isRight)
 import Data.Map qualified as Map
-import Data.Maybe (isJust)
-import Hedgehog
+import Data.Maybe (isJust, isNothing)
+import Hedgehog qualified as H
 import Hedgehog.Gen qualified as Gen
 import Hedgehog.Range qualified as Range
 import Test.Hspec
 import Test.Tasty
+import Test.Tasty.ExpectedFailure (expectFail)
 import Test.Tasty.Hedgehog
 
 -- ---------------------------------------------- --
@@ -18,18 +20,31 @@ import Test.Tasty.Hedgehog
 -- ---------------------------------------------- --
 -- https://hackage.haskell.org/package/hspec-expectations-0.8.4/docs/Test-Hspec-Expectations.html
 
-spec_solution :: Spec
-spec_solution = do
+test :: String -> IO () -> SpecWith (Arg (IO ()))
+test = it
+
+spec_tests :: Spec
+spec_tests = do
   describe "Unit tests" $ do
     describe "Tests for the addBook operation" $ do
       addBookUnitTest1
       addBookUnitTest2
     describe "Tests for the removeBook operation" $ do
-      return ()
+      removeBookUnitTest1
+      removeBookUnitTest2
+      removeBookUnitTest3
+    describe "Tests for lookup operations" $ do
+      describe "Lookup by title" $ do
+        lookupByTitleUnitTest1
+        lookupByTitleUnitTest2
+      describe "Lookup by Author" $ do
+        lookupByAuthorUnitTest1
+
+-- lookupByAuthorUnitTest2
 
 addBookUnitTest1 :: SpecWith ()
 addBookUnitTest1 = do
-  it "An admin can add a book to a library if said library doesn't already have a copy of said book" $ do
+  test "A book can be added to a library if said library doesn't already have a copy of said book" $ do
     let firstBookTitle = title bookOne
     let (_, Library currentBookShelf _) = runState (runExceptT (runWriterT $ addBook bookOne)) library
     let bookLibEntryM = Map.lookup firstBookTitle currentBookShelf
@@ -38,7 +53,7 @@ addBookUnitTest1 = do
 
 addBookUnitTest2 :: SpecWith ()
 addBookUnitTest2 = do
-  it "An admin can add copies of a book to a library if said library already has at least one copy of said book" $ do
+  test "A copy of a book can be added if a library already has at least one copy of a given book" $ do
     let firstBookTitle = title bookOne
     let program = addBook bookOne >> addBook bookOne
     let (_, Library currentBookShelf _) = runState (runExceptT (runWriterT program)) library
@@ -46,17 +61,88 @@ addBookUnitTest2 = do
     bookLibEntryM `shouldSatisfy` isJust
     maybe 0 copies bookLibEntryM `shouldSatisfy` (== 2)
 
--- Any edge cases for the `addBook` operation?
+removeBookUnitTest1 :: SpecWith ()
+removeBookUnitTest1 = do
+  test "A copy of a book can be removed from a library" $ do
+    let firstBookTitle = title bookOne
+    let program = addBook bookOne >> addBook bookOne >> removeBook firstBookTitle
 
--- removeBookUnitTest1 :: SpecWith ()
--- removeBookUnitTest1 = do
---   it "An admin can add copies of a book to a library if said library already has at least one copy of said book" $ do
---     let firstBookTitle = title bookOne
---     let program = addBook bookOne >> addBook bookOne
---     let (_, Library currentBookShelf _) = runState (runExceptT (runWriterT program)) library
---     let bookLibEntryM = Map.lookup firstBookTitle currentBookShelf
---     bookLibEntryM `shouldSatisfy` isJust
---     maybe 0 copies bookLibEntryM `shouldSatisfy` (== 2)
+    let (_, Library currentBookShelf _) = runState (runExceptT (runWriterT program)) library
+
+    let bookLibEntryM = Map.lookup firstBookTitle currentBookShelf
+    bookLibEntryM `shouldSatisfy` isJust
+    maybe 0 copies bookLibEntryM `shouldSatisfy` (== 1)
+
+removeBookUnitTest2 :: SpecWith ()
+removeBookUnitTest2 = do
+  test "A book can be removed from a libraries inventory list if it has no copies" $ do
+    let firstBookTitle = title bookOne
+    let program = addBook bookOne >> removeBook firstBookTitle >> removeBook firstBookTitle
+
+    let (_, Library currentBookShelf _) = runState (runExceptT (runWriterT program)) library
+
+    let bookLibEntryM = Map.lookup firstBookTitle currentBookShelf
+    bookLibEntryM `shouldSatisfy` isNothing
+
+removeBookUnitTest3 :: SpecWith ()
+removeBookUnitTest3 = do
+  test "An error occurs when a removal is attempted on a book that doesn't exist" $ do
+    let firstBookTitle = title bookOne
+    let program = removeBook firstBookTitle
+
+    let (programOutput, Library currentBookShelf _) = runState (runExceptT (runWriterT program)) library
+
+    let bookLibEntryM = Map.lookup firstBookTitle currentBookShelf
+    bookLibEntryM `shouldSatisfy` isNothing
+
+    programOutput `shouldSatisfy` isLeft
+
+    let isBookNotFoundError = case programOutput of
+          Left (BookNotFound _) -> True
+          _ -> False
+
+    isBookNotFoundError `shouldBe` True
+
+lookupByTitleUnitTest1 :: SpecWith ()
+lookupByTitleUnitTest1 = do
+  test "A user can lookup a book by it's title" $ do
+    let thirdBookTitle = title bookThree
+    let program = addBook bookThree
+
+    let (_, Library currentBookShelf _) = runState (runExceptT (runWriterT program)) library
+    let bookLibEntryM = lookupBookByTitle currentBookShelf thirdBookTitle
+
+    bookLibEntryM `shouldSatisfy` isRight
+    either (const "") (title . bookInfo) bookLibEntryM `shouldBe` thirdBookTitle
+
+lookupByTitleUnitTest2 :: SpecWith ()
+lookupByTitleUnitTest2 = do
+  test "A user cannot lookup a book that doesn't exit" $ do
+    let firstBookTitle = title bookOne
+    let program = addBook bookThree
+
+    let (_, Library currentBookShelf _) = runState (runExceptT (runWriterT program)) library
+    let bookLibEntryM = lookupBookByTitle currentBookShelf firstBookTitle
+
+    bookLibEntryM `shouldSatisfy` isLeft
+
+    let isBookNotFoundError = case bookLibEntryM of
+          Left (BookNotFound _) -> True
+          _ -> False
+
+    isBookNotFoundError `shouldBe` True
+
+lookupByAuthorUnitTest1 :: SpecWith ()
+lookupByAuthorUnitTest1 = do
+  test "A user can lookup a book by the name of the author" $ do
+    let firstBookAuthor = author bookOne
+    let program = addBook bookOne
+
+    let (_, Library currentBookShelf _) = runState (runExceptT (runWriterT program)) library
+    let bookLibEntryM = lookupBookByAuthor currentBookShelf firstBookAuthor
+
+    bookLibEntryM `shouldSatisfy` isRight
+    either (const "") (author . bookInfo) bookLibEntryM `shouldBe` firstBookAuthor
 
 -- correctInputUnitTest1 :: SpecWith ()
 -- correctInputUnitTest1 = do
