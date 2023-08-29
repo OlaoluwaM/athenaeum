@@ -112,7 +112,7 @@ removeBook bookTitle = do
   copyRemovedMsg = [fmt|Removed a copy of the book '{bookTitle}'|]
   bookDeletedMsg = [fmt|Deleted the book '{bookTitle}' from library|]
 
-displayBookAvailability :: Text -> BasicStack ()
+displayBookAvailability :: Text -> BasicStack Text
 displayBookAvailability bookTitle = do
   (Library bookShelf _) <- get
   let bookAvailabilityStatus = lookupBookByTitleIncludingBooksWithoutCopies bookTitle bookShelf
@@ -125,7 +125,7 @@ displayBookAvailability bookTitle = do
         Left (CustomError (ErrorContext errContext)) -> [fmt|The following error occurred when attempting to display the availability of the book '{bookTitle}': {errContext}|]
         Left _ -> "An error Occurred"
 
-  tell [bookAvailabilityMsg]
+  return bookAvailabilityMsg
 
 registerPatron :: Patron -> BasicStack RegisteredPatron
 registerPatron patronToBeRegistered@(Patron patronName patronIdNumber) = do

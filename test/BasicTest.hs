@@ -1,6 +1,7 @@
 module BasicTest where
 
 import Basic
+import Basic (lookupBookByAuthor)
 import Control.Monad.Except
 import Control.Monad.State (runState)
 import Control.Monad.Writer
@@ -39,8 +40,12 @@ spec_tests = do
         lookupByTitleUnitTest2
       describe "Lookup by Author" $ do
         lookupByAuthorUnitTest1
-
--- lookupByAuthorUnitTest2
+        lookupByAuthorUnitTest2
+      describe "Lookup by ISBN" $ do
+        lookupByISBNUnitTest1
+        lookupByISBNUnitTest2
+    describe "Tests for displaying book availability" $ do
+      return ()
 
 addBookUnitTest1 :: SpecWith ()
 addBookUnitTest1 = do
@@ -117,7 +122,7 @@ lookupByTitleUnitTest1 = do
 
 lookupByTitleUnitTest2 :: SpecWith ()
 lookupByTitleUnitTest2 = do
-  test "A user cannot lookup a book that doesn't exit" $ do
+  test "A user cannot lookup a book that doesn't exit (lookup by title)" $ do
     let firstBookTitle = title bookOne
     let program = addBook bookThree
 
@@ -143,6 +148,55 @@ lookupByAuthorUnitTest1 = do
 
     bookLibEntryM `shouldSatisfy` isRight
     either (const "") (author . bookInfo) bookLibEntryM `shouldBe` firstBookAuthor
+
+lookupByAuthorUnitTest2 :: SpecWith ()
+lookupByAuthorUnitTest2 = do
+  test "A user cannot lookup a book that doesn't exit (lookup by author)" $ do
+    let bookOneAuthor = author bookOne
+    let program = addBook bookThree
+
+    let (_, Library currentBookShelf _) = runState (runExceptT (runWriterT program)) library
+    let bookLibEntryM = lookupBookByAuthor currentBookShelf bookOneAuthor
+
+    bookLibEntryM `shouldSatisfy` isLeft
+
+    let isBookNotFoundError = case bookLibEntryM of
+          Left (BookNotFound _) -> True
+          _ -> False
+
+    isBookNotFoundError `shouldBe` True
+
+lookupByISBNUnitTest1 :: SpecWith ()
+lookupByISBNUnitTest1 = do
+  test "A user can lookup a book its ISBN" $ do
+    let bookOneISBN = isbn bookOne
+    let program = addBook bookOne
+
+    let (_, Library currentBookShelf _) = runState (runExceptT (runWriterT program)) library
+    let bookLibEntryM = lookupBookByISBN currentBookShelf bookOneISBN
+
+    bookLibEntryM `shouldSatisfy` isRight
+    either (const "") (isbn . bookInfo) bookLibEntryM `shouldBe` bookOneISBN
+
+lookupByISBNUnitTest2 :: SpecWith ()
+lookupByISBNUnitTest2 = do
+  test "A user cannot lookup a book that doesn't exit (lookup by ISBN)" $ do
+    let bookOneISBN = isbn bookOne
+    let program = addBook bookThree
+
+    let (_, Library currentBookShelf _) = runState (runExceptT (runWriterT program)) library
+    let bookLibEntryM = lookupBookByAuthor currentBookShelf bookOneISBN
+
+    bookLibEntryM `shouldSatisfy` isLeft
+
+    let isBookNotFoundError = case bookLibEntryM of
+          Left (BookNotFound _) -> True
+          _ -> False
+
+    isBookNotFoundError `shouldBe` True
+
+bookAvailabilityDisplayUnitTest1 :: SpecWith ()
+bookAvailabilityDisplayUnitTest1 = return ()
 
 -- correctInputUnitTest1 :: SpecWith ()
 -- correctInputUnitTest1 = do
