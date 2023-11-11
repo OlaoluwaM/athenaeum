@@ -1,22 +1,31 @@
 module Basic where
 
-import Control.Error.Util (note)
-import Control.Monad.Except (ExceptT, MonadError (throwError), liftEither, runExceptT)
-import Control.Monad.State
-import Control.Monad.Writer
-import Data.List qualified as List
+import Control.Monad.Except (ExceptT)
+import Control.Monad.State (State)
+import Control.Monad.Writer (WriterT)
 import Data.Map (Map)
-import Data.Map qualified as Map
-import Data.Maybe (isJust)
 import Data.Set (Set)
-import Data.Set qualified as Set
-import Data.Text (Text, intercalate)
-import Data.Text.IO qualified as TIO
-import Data.Time
+import Data.Text (Text)
+import Data.Time (Day)
 import Data.UUID (UUID)
 import Helpers (V3)
-import Helpers qualified
+
+import Data.Maybe (isJust)
 import PyF (fmt)
+
+import Control.Error.Util qualified as ErrorUtil
+import Control.Monad qualified as ControlM
+import Control.Monad.Except qualified as Except
+import Control.Monad.State qualified as State
+import Control.Monad.Writer qualified as Writer
+import Data.List qualified as List
+import Data.Map qualified as Map
+import Data.Set qualified as Set
+import Data.Text qualified as Text
+import Data.Text.IO qualified as TIO
+import Data.Time qualified as Time
+
+import Helpers qualified
 
 type RegistrationID = UUID
 
@@ -69,16 +78,16 @@ type BasicStack a = WriterT [Text] (ExceptT LibrarySysError (State Library)) a
 -- ------------------------------ Athenaeum Basic API ----------------------------- --
 addBook :: Book -> BasicStack LibraryEntry
 addBook newBook@(Book newBookTitle _ _) = do
-  currentLibrary@(Library currentBookShelf _) <- get
+  currentLibrary@(Library currentBookShelf _) <- State.get
   let bookAvailabilityStatus = lookupBookByTitle currentBookShelf newBookTitle
 
   let (updatedBookShelf, msg, bookLibEntry) = case bookAvailabilityStatus of
         Right bookLibEntry' -> (incrementBookCopiesCount newBookTitle currentBookShelf, newCopyMsg, bookLibEntry')
         Left _ -> let (updatedBookShelf', newLibEntry) = addNewBookToLibrary currentBookShelf in (updatedBookShelf', newBookMsg, newLibEntry)
 
-  put currentLibrary{getBookShelf = updatedBookShelf}
+  State.put currentLibrary{getBookShelf = updatedBookShelf}
 
-  writer (bookLibEntry, [msg])
+  Writer.writer (bookLibEntry, [msg])
  where
   addNewBookToLibrary currentLib = let newLibEntry = LibraryEntry{bookInfo = newBook, copies = 1} in (Map.insert newBookTitle newLibEntry currentLib, newLibEntry)
 
@@ -96,16 +105,16 @@ lookupBookByISBN bookShelf bookISBN = let errorMsg = [fmt|Could not find book wi
 
 removeBook :: Text -> BasicStack (Maybe LibraryEntry)
 removeBook bookTitle = do
-  currentLibrary@(Library currentBookShelf _) <- get
-  bookLibEntry@(LibraryEntry _ copiesCount) <- lift $ liftEither $ lookupBookByTitleIncludingBooksWithoutCopies bookTitle currentBookShelf
+  currentLibrary@(Library currentBookShelf _) <- State.get
+  bookLibEntry@(LibraryEntry _ copiesCount) <- Writer.lift $ Except.liftEither $ lookupBookByTitleIncludingBooksWithoutCopies bookTitle currentBookShelf
 
   let (updatedBookShelf, msg, maybeBookLibEntry) =
         if copiesCount > 0
           then (decrementBookCopiesCount bookTitle currentBookShelf, copyRemovedMsg, Just bookLibEntry)
           else (deleteBookFromLibrary currentBookShelf, bookDeletedMsg, Nothing)
 
-  put currentLibrary{getBookShelf = updatedBookShelf}
-  writer (maybeBookLibEntry, [msg])
+  State.put currentLibrary{getBookShelf = updatedBookShelf}
+  Writer.writer (maybeBookLibEntry, [msg])
  where
   deleteBookFromLibrary = Map.delete bookTitle
 
@@ -114,7 +123,7 @@ removeBook bookTitle = do
 
 displayBookAvailability :: Text -> BasicStack Text
 displayBookAvailability bookTitle = do
-  (Library bookShelf _) <- get
+  (Library bookShelf _) <- State.get
   let bookAvailabilityStatus = lookupBookByTitleIncludingBooksWithoutCopies bookTitle bookShelf
   let copyTense copiesCount = if copiesCount == 1 then "copy" else "copies"
 
@@ -129,15 +138,15 @@ displayBookAvailability bookTitle = do
 
 registerPatron :: Patron -> BasicStack RegisteredPatron
 registerPatron patronToBeRegistered@(Patron patronName patronIdNumber) = do
-  currentLib@(Library _ borrowLog) <- get
+  currentLib@(Library _ borrowLog) <- State.get
   let generatedRegistrationID = Helpers.randomUUID patronIdNumber
 
   if isAlreadyRegistered generatedRegistrationID borrowLog
-    then tell [[fmt|{patronName} has already been registered|]]
+    then Writer.tell [[fmt|{patronName} has already been registered|]]
     else do
       let updatedBorrowLog = Map.insert generatedRegistrationID Set.empty borrowLog
-      put currentLib{getBorrowLog = updatedBorrowLog}
-      tell [[fmt|{patronName} has been registered|]]
+      State.put currentLib{getBorrowLog = updatedBorrowLog}
+      Writer.tell [[fmt|{patronName} has been registered|]]
 
   return RegisteredPatron{patronInfo = patronToBeRegistered, registrationID = generatedRegistrationID}
  where
@@ -146,43 +155,43 @@ registerPatron patronToBeRegistered@(Patron patronName patronIdNumber) = do
 -- You can't borrow the same book twice
 borrowBook :: Word -> Day -> Text -> RegisteredPatron -> BasicStack RegisteredPatron
 borrowBook randomOffsetForDeadline currentDay bookTitle registeredPatron@(RegisteredPatron (Patron patronName _) patronRegistrationID) = do
-  currentLib@(Library currentBookShelf currentBorrowLog) <- get
+  currentLib@(Library currentBookShelf currentBorrowLog) <- State.get
 
   let alreadyBorrowedErrorMsg = [fmt|{patronName} has already borrowed the book '{bookTitle}'|]
-  when (hasAlreadyBorrowedBook currentLib bookTitle registeredPatron) $ throwError $ PastDue $ Just $ ErrorContext alreadyBorrowedErrorMsg
+  ControlM.when (hasAlreadyBorrowedBook currentLib bookTitle registeredPatron) $ Except.throwError $ PastDue $ Just $ ErrorContext alreadyBorrowedErrorMsg
 
-  (LibraryEntry bookInfo' _) <- lift $ liftEither $ lookupBookByTitle currentBookShelf bookTitle
+  (LibraryEntry bookInfo' _) <- Writer.lift $ Except.liftEither $ lookupBookByTitle currentBookShelf bookTitle
 
   let returnDeadline' = calcReturnDeadline currentDay
   let updatedBorrowLog = trackBookBorrowing patronRegistrationID bookInfo' currentDay returnDeadline' currentBorrowLog
 
-  put currentLib{getBookShelf = decrementBookCopiesCount bookTitle currentBookShelf, getBorrowLog = updatedBorrowLog}
+  State.put currentLib{getBookShelf = decrementBookCopiesCount bookTitle currentBookShelf, getBorrowLog = updatedBorrowLog}
 
-  writer (registeredPatron, [[fmt|{patronName} just borrowed the book '{bookTitle}'. Return deadline is {Helpers.tshow returnDeadline'}|]])
+  Writer.writer (registeredPatron, [[fmt|{patronName} just borrowed the book '{bookTitle}'. Return deadline is {Helpers.tshow returnDeadline'}|]])
  where
   trackBookBorrowing borrowerID bookToBorrow borrowDay returnDeadline' =
     let borrowedBook = BorrowedBook{infoOfBorrowedBook = bookToBorrow, returnDeadline = returnDeadline', borrowDate = borrowDay}
      in Map.adjust (Set.insert borrowedBook) borrowerID
 
-  calcReturnDeadline = addDays (toInteger randomOffsetForDeadline)
+  calcReturnDeadline = Time.addDays (toInteger randomOffsetForDeadline)
 
 returnBook :: Day -> Book -> RegisteredPatron -> BasicStack RegisteredPatron
 returnBook currentDay borrowedBook@(Book bookTitle _ _) registeredPatron@(RegisteredPatron (Patron patronName _) patronRegistrationID) = do
-  currentLib@(Library _ currentBorrowLog) <- get
+  currentLib@(Library _ currentBorrowLog) <- State.get
 
   let wrongBorrowerError = CustomError $ ErrorContext [fmt|{patronName} has not borrowed the book '{bookTitle}'|]
-  (BorrowedBook _ returnDeadline' _) <- lift $ liftEither $ note wrongBorrowerError (getBorrowedBook currentBorrowLog borrowedBook registeredPatron)
+  (BorrowedBook _ returnDeadline' _) <- Writer.lift $ Except.liftEither $ ErrorUtil.note wrongBorrowerError (getBorrowedBook currentBorrowLog borrowedBook registeredPatron)
 
   let updatedBorrowLog = unTrackBookBorrowing patronRegistrationID borrowedBook currentBorrowLog
-  _ <- censor (const []) (addBook borrowedBook)
+  _ <- Writer.censor (const []) (addBook borrowedBook)
 
-  updatedBookShelf <- gets getBookShelf
-  put currentLib{getBookShelf = updatedBookShelf, getBorrowLog = updatedBorrowLog}
+  updatedBookShelf <- State.gets getBookShelf
+  State.put currentLib{getBookShelf = updatedBookShelf, getBorrowLog = updatedBorrowLog}
 
-  let deadlineOffset = diffDays returnDeadline' currentDay
-  when (deadlineOffset < 0) $ throwError $ PastDue $ Just $ ErrorContext [fmt|You are returning this book {abs deadlineOffset} days past due!|]
+  let deadlineOffset = Time.diffDays returnDeadline' currentDay
+  ControlM.when (deadlineOffset < 0) $ Except.throwError $ PastDue $ Just $ ErrorContext [fmt|You are returning this book {abs deadlineOffset} days past due!|]
 
-  writer (registeredPatron, [[fmt|{patronName} returned the book '{bookTitle}' {deadlineOffset} days before due|]])
+  Writer.writer (registeredPatron, [[fmt|{patronName} returned the book '{bookTitle}' {deadlineOffset} days before due|]])
  where
   unTrackBookBorrowing borrowerID bookToReturn =
     let filterFnForBookToReturn (BorrowedBook aBorrowedBook _ _) = aBorrowedBook /= bookToReturn
@@ -212,7 +221,7 @@ modifyBookCopyCount copyModFn libBookEntry@(LibraryEntry _ currentCopyCount) = l
 lookupBookByTitleIncludingBooksWithoutCopies :: Text -> BookShelf -> Either LibrarySysError LibraryEntry
 lookupBookByTitleIncludingBooksWithoutCopies bookTitle = addErrorMsg . Map.lookup bookTitle
  where
-  addErrorMsg = note (BookNotFound $ Just $ ErrorContext errorMsg)
+  addErrorMsg = ErrorUtil.note (BookNotFound $ Just $ ErrorContext errorMsg)
   errorMsg = [fmt|Could not find book with title '{bookTitle}'|]
 
 hideBooksWithNoCopies :: LibraryEntry -> Either LibrarySysError LibraryEntry
@@ -225,7 +234,7 @@ lookupBookByBookProperty bookShelf bookFieldLabel errorMsg bookPropertyToSearchB
   addErrorMsg errorMsg (List.find bookPropertyLookup (Map.toList bookShelf)) >>= hideBooksWithNoCopies . snd
  where
   bookPropertyLookup (_, LibraryEntry bookInfo' _) = bookPropertyToSearchBy == bookFieldLabel bookInfo'
-  addErrorMsg = note . BookNotFound . Just . ErrorContext
+  addErrorMsg = ErrorUtil.note . BookNotFound . Just . ErrorContext
 
 getLibSysErrorContext :: LibrarySysError -> Text
 getLibSysErrorContext = \case
@@ -240,7 +249,7 @@ getLibSysErrorContext = \case
 
 -- ---------------------------------- Main ---------------------------------- --
 getDay :: IO Day
-getDay = utctDay <$> getCurrentTime
+getDay = Time.utctDay <$> Time.getCurrentTime
 
 bookOne :: Book
 bookOne = Book{title = "Production Haskell", author = "Matt Parsons", isbn = "ISBN-13: 978-3-16-148410-0"}
@@ -269,7 +278,7 @@ setup = do
   let secondBookTitle = title bookTwo
   let thirdBookTitle = title bookThree
 
-  tell [[fmt|Stocking the book {firstBookTitle}...|]]
+  Writer.tell [[fmt|Stocking the book {firstBookTitle}...|]]
   _ <- displayBookAvailability firstBookTitle
   _ <- displayBookAvailability secondBookTitle
   _ <- displayBookAvailability thirdBookTitle
@@ -293,11 +302,11 @@ setup = do
   _ <- addBook bookTwo
   _ <- addBook bookThree
 
-  tell ["Book Stocking complete", "Registering Patrons..."]
+  Writer.tell ["Book Stocking complete", "Registering Patrons..."]
 
   registeredPatrons <- traverse registerPatron (Helpers.V3 patronOne patronTwo patronThree)
 
-  tell ["Patron registration complete!"]
+  Writer.tell ["Patron registration complete!"]
 
   return registeredPatrons
 
@@ -318,9 +327,10 @@ happyPathProgram today = do
 main :: IO ()
 main = do
   today <- getDay
-  let (programOutput, finalLibState) = runState (runExceptT (runWriterT $ happyPathProgram today)) library
+  let (programOutput, finalLibState) = State.runState (Except.runExceptT (Writer.runWriterT $ happyPathProgram today)) library
 
-  let serializedProgramTwoOutput = either getLibSysErrorContext (intercalate "\n" . snd) programOutput
+  let serializedProgramTwoOutput = either getLibSysErrorContext (Text.intercalate "\n" . snd) programOutput
+
   TIO.putStrLn serializedProgramTwoOutput
   TIO.putStrLn "Program complete\n\n"
   print finalLibState

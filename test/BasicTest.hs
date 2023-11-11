@@ -1,19 +1,26 @@
 module BasicTest where
 
-import Basic
-import Basic (lookupBookByAuthor)
-import Control.Monad.Except
-import Control.Monad.State (runState)
-import Control.Monad.Writer
+import Basic (Book, Library, Patron)
 import Data.Either (isLeft, isRight)
-import Data.Map qualified as Map
+import Data.Map (Map)
 import Data.Maybe (isJust, isNothing)
-import Hedgehog qualified as H
-import Hedgehog.Gen qualified as Gen
-import Hedgehog.Range qualified as Range
+import Data.Text (Text)
+
+import Basic qualified
+import Hedgehog qualified
+import Helpers qualified
+
+import Control.Monad.Except qualified as Except
+import Control.Monad.State qualified as State
+import Control.Monad.Writer qualified as Writer
+import Data.Map qualified as Map
+import Data.Text qualified as Text
+import Hedgehog.Gen qualified as HGen
+import Hedgehog.Range qualified as HRange
+
 import Test.Hspec
 import Test.Tasty
-import Test.Tasty.ExpectedFailure (expectFail)
+import Test.Tasty.ExpectedFailure
 import Test.Tasty.Hedgehog
 
 -- ---------------------------------------------- --
@@ -23,6 +30,9 @@ import Test.Tasty.Hedgehog
 
 test :: String -> IO () -> SpecWith (Arg (IO ()))
 test = it
+
+expectSuccess :: Expectation
+expectSuccess = True `shouldBe` True
 
 spec_tests :: Spec
 spec_tests = do
@@ -45,46 +55,50 @@ spec_tests = do
         lookupByISBNUnitTest1
         lookupByISBNUnitTest2
     describe "Tests for displaying book availability" $ do
-      return ()
+      bookAvailabilityDisplayUnitTest1
+      bookAvailabilityDisplayUnitTest2
+    describe "Tests for displaying book availability" $ do
+      bookAvailabilityDisplayUnitTest1
+      bookAvailabilityDisplayUnitTest2
 
 addBookUnitTest1 :: SpecWith ()
 addBookUnitTest1 = do
   test "A book can be added to a library if said library doesn't already have a copy of said book" $ do
-    let firstBookTitle = title bookOne
-    let (_, Library currentBookShelf _) = runState (runExceptT (runWriterT $ addBook bookOne)) library
+    let firstBookTitle = Basic.title bookOne
+    let (_, Basic.Library currentBookShelf _) = State.runState (Except.runExceptT (Writer.runWriterT $ Basic.addBook bookOne)) library
     let bookLibEntryM = Map.lookup firstBookTitle currentBookShelf
     bookLibEntryM `shouldSatisfy` isJust
-    maybe 0 copies bookLibEntryM `shouldSatisfy` (== 1)
+    maybe 0 Basic.copies bookLibEntryM `shouldSatisfy` (== 1)
 
 addBookUnitTest2 :: SpecWith ()
 addBookUnitTest2 = do
   test "A copy of a book can be added if a library already has at least one copy of a given book" $ do
-    let firstBookTitle = title bookOne
-    let program = addBook bookOne >> addBook bookOne
-    let (_, Library currentBookShelf _) = runState (runExceptT (runWriterT program)) library
+    let firstBookTitle = Basic.title bookOne
+    let program = Basic.addBook bookOne >> Basic.addBook bookOne
+    let (_, Basic.Library currentBookShelf _) = State.runState (Except.runExceptT (Writer.runWriterT program)) library
     let bookLibEntryM = Map.lookup firstBookTitle currentBookShelf
     bookLibEntryM `shouldSatisfy` isJust
-    maybe 0 copies bookLibEntryM `shouldSatisfy` (== 2)
+    maybe 0 Basic.copies bookLibEntryM `shouldSatisfy` (== 2)
 
 removeBookUnitTest1 :: SpecWith ()
 removeBookUnitTest1 = do
   test "A copy of a book can be removed from a library" $ do
-    let firstBookTitle = title bookOne
-    let program = addBook bookOne >> addBook bookOne >> removeBook firstBookTitle
+    let firstBookTitle = Basic.title bookOne
+    let program = Basic.addBook bookOne >> Basic.addBook bookOne >> Basic.removeBook firstBookTitle
 
-    let (_, Library currentBookShelf _) = runState (runExceptT (runWriterT program)) library
+    let (_, Basic.Library currentBookShelf _) = State.runState (Except.runExceptT (Writer.runWriterT program)) library
 
     let bookLibEntryM = Map.lookup firstBookTitle currentBookShelf
     bookLibEntryM `shouldSatisfy` isJust
-    maybe 0 copies bookLibEntryM `shouldSatisfy` (== 1)
+    maybe 0 Basic.copies bookLibEntryM `shouldSatisfy` (== 1)
 
 removeBookUnitTest2 :: SpecWith ()
 removeBookUnitTest2 = do
   test "A book can be removed from a libraries inventory list if it has no copies" $ do
-    let firstBookTitle = title bookOne
-    let program = addBook bookOne >> removeBook firstBookTitle >> removeBook firstBookTitle
+    let firstBookTitle = Basic.title bookOne
+    let program = Basic.addBook bookOne >> Basic.removeBook firstBookTitle >> Basic.removeBook firstBookTitle
 
-    let (_, Library currentBookShelf _) = runState (runExceptT (runWriterT program)) library
+    let (_, Basic.Library currentBookShelf _) = State.runState (Except.runExceptT (Writer.runWriterT program)) library
 
     let bookLibEntryM = Map.lookup firstBookTitle currentBookShelf
     bookLibEntryM `shouldSatisfy` isNothing
@@ -92,10 +106,10 @@ removeBookUnitTest2 = do
 removeBookUnitTest3 :: SpecWith ()
 removeBookUnitTest3 = do
   test "An error occurs when a removal is attempted on a book that doesn't exist" $ do
-    let firstBookTitle = title bookOne
-    let program = removeBook firstBookTitle
+    let firstBookTitle = Basic.title bookOne
+    let program = Basic.removeBook firstBookTitle
 
-    let (programOutput, Library currentBookShelf _) = runState (runExceptT (runWriterT program)) library
+    let (programOutput, Basic.Library currentBookShelf _) = State.runState (Except.runExceptT (Writer.runWriterT program)) library
 
     let bookLibEntryM = Map.lookup firstBookTitle currentBookShelf
     bookLibEntryM `shouldSatisfy` isNothing
@@ -103,7 +117,7 @@ removeBookUnitTest3 = do
     programOutput `shouldSatisfy` isLeft
 
     let isBookNotFoundError = case programOutput of
-          Left (BookNotFound _) -> True
+          Left (Basic.BookNotFound _) -> True
           _ -> False
 
     isBookNotFoundError `shouldBe` True
@@ -111,28 +125,28 @@ removeBookUnitTest3 = do
 lookupByTitleUnitTest1 :: SpecWith ()
 lookupByTitleUnitTest1 = do
   test "A user can lookup a book by it's title" $ do
-    let thirdBookTitle = title bookThree
-    let program = addBook bookThree
+    let thirdBookTitle = Basic.title bookThree
+    let program = Basic.addBook bookThree
 
-    let (_, Library currentBookShelf _) = runState (runExceptT (runWriterT program)) library
-    let bookLibEntryM = lookupBookByTitle currentBookShelf thirdBookTitle
+    let (_, Basic.Library currentBookShelf _) = State.runState (Except.runExceptT (Writer.runWriterT program)) library
+    let bookLibEntryM = Basic.lookupBookByTitle currentBookShelf thirdBookTitle
 
     bookLibEntryM `shouldSatisfy` isRight
-    either (const "") (title . bookInfo) bookLibEntryM `shouldBe` thirdBookTitle
+    either (const "") (Basic.title . Basic.bookInfo) bookLibEntryM `shouldBe` thirdBookTitle
 
 lookupByTitleUnitTest2 :: SpecWith ()
 lookupByTitleUnitTest2 = do
   test "A user cannot lookup a book that doesn't exit (lookup by title)" $ do
-    let firstBookTitle = title bookOne
-    let program = addBook bookThree
+    let firstBookTitle = Basic.title bookOne
+    let program = Basic.addBook bookThree
 
-    let (_, Library currentBookShelf _) = runState (runExceptT (runWriterT program)) library
-    let bookLibEntryM = lookupBookByTitle currentBookShelf firstBookTitle
+    let (_, Basic.Library currentBookShelf _) = State.runState (Except.runExceptT (Writer.runWriterT program)) library
+    let bookLibEntryM = Basic.lookupBookByTitle currentBookShelf firstBookTitle
 
     bookLibEntryM `shouldSatisfy` isLeft
 
     let isBookNotFoundError = case bookLibEntryM of
-          Left (BookNotFound _) -> True
+          Left (Basic.BookNotFound _) -> True
           _ -> False
 
     isBookNotFoundError `shouldBe` True
@@ -140,28 +154,28 @@ lookupByTitleUnitTest2 = do
 lookupByAuthorUnitTest1 :: SpecWith ()
 lookupByAuthorUnitTest1 = do
   test "A user can lookup a book by the name of the author" $ do
-    let firstBookAuthor = author bookOne
-    let program = addBook bookOne
+    let firstBookAuthor = Basic.author bookOne
+    let program = Basic.addBook bookOne
 
-    let (_, Library currentBookShelf _) = runState (runExceptT (runWriterT program)) library
-    let bookLibEntryM = lookupBookByAuthor currentBookShelf firstBookAuthor
+    let (_, Basic.Library currentBookShelf _) = State.runState (Except.runExceptT (Writer.runWriterT program)) library
+    let bookLibEntryM = Basic.lookupBookByAuthor currentBookShelf firstBookAuthor
 
     bookLibEntryM `shouldSatisfy` isRight
-    either (const "") (author . bookInfo) bookLibEntryM `shouldBe` firstBookAuthor
+    either (const "") (Basic.author . Basic.bookInfo) bookLibEntryM `shouldBe` firstBookAuthor
 
 lookupByAuthorUnitTest2 :: SpecWith ()
 lookupByAuthorUnitTest2 = do
   test "A user cannot lookup a book that doesn't exit (lookup by author)" $ do
-    let bookOneAuthor = author bookOne
-    let program = addBook bookThree
+    let bookOneAuthor = Basic.author bookOne
+    let program = Basic.addBook bookThree
 
-    let (_, Library currentBookShelf _) = runState (runExceptT (runWriterT program)) library
-    let bookLibEntryM = lookupBookByAuthor currentBookShelf bookOneAuthor
+    let (_, Basic.Library currentBookShelf _) = State.runState (Except.runExceptT (Writer.runWriterT program)) library
+    let bookLibEntryM = Basic.lookupBookByAuthor currentBookShelf bookOneAuthor
 
     bookLibEntryM `shouldSatisfy` isLeft
 
     let isBookNotFoundError = case bookLibEntryM of
-          Left (BookNotFound _) -> True
+          Left (Basic.BookNotFound _) -> True
           _ -> False
 
     isBookNotFoundError `shouldBe` True
@@ -169,34 +183,63 @@ lookupByAuthorUnitTest2 = do
 lookupByISBNUnitTest1 :: SpecWith ()
 lookupByISBNUnitTest1 = do
   test "A user can lookup a book its ISBN" $ do
-    let bookOneISBN = isbn bookOne
-    let program = addBook bookOne
+    let bookOneISBN = Basic.isbn bookOne
+    let program = Basic.addBook bookOne
 
-    let (_, Library currentBookShelf _) = runState (runExceptT (runWriterT program)) library
-    let bookLibEntryM = lookupBookByISBN currentBookShelf bookOneISBN
+    let (_, Basic.Library currentBookShelf _) = State.runState (Except.runExceptT (Writer.runWriterT program)) library
+    let bookLibEntryM = Basic.lookupBookByISBN currentBookShelf bookOneISBN
 
     bookLibEntryM `shouldSatisfy` isRight
-    either (const "") (isbn . bookInfo) bookLibEntryM `shouldBe` bookOneISBN
+    either (const "") (Basic.isbn . Basic.bookInfo) bookLibEntryM `shouldBe` bookOneISBN
 
 lookupByISBNUnitTest2 :: SpecWith ()
 lookupByISBNUnitTest2 = do
   test "A user cannot lookup a book that doesn't exit (lookup by ISBN)" $ do
-    let bookOneISBN = isbn bookOne
-    let program = addBook bookThree
+    let bookOneISBN = Basic.isbn bookOne
+    let program = Basic.addBook bookThree
 
-    let (_, Library currentBookShelf _) = runState (runExceptT (runWriterT program)) library
-    let bookLibEntryM = lookupBookByAuthor currentBookShelf bookOneISBN
+    let (_, Basic.Library currentBookShelf _) = State.runState (Except.runExceptT (Writer.runWriterT program)) library
+    let bookLibEntryM = Basic.lookupBookByAuthor currentBookShelf bookOneISBN
 
     bookLibEntryM `shouldSatisfy` isLeft
 
     let isBookNotFoundError = case bookLibEntryM of
-          Left (BookNotFound _) -> True
+          Left (Basic.BookNotFound _) -> True
           _ -> False
 
     isBookNotFoundError `shouldBe` True
 
 bookAvailabilityDisplayUnitTest1 :: SpecWith ()
-bookAvailabilityDisplayUnitTest1 = return ()
+bookAvailabilityDisplayUnitTest1 = do
+  test "A user can check the availability of a book that exists" $ do
+    let bookOneTitle = Basic.title bookOne
+    let program = Basic.addBook bookOne >> Basic.addBook bookOne >> Basic.addBook bookOne >> Basic.displayBookAvailability bookOneTitle
+    let (programOutput, _) = State.runState (Except.runExceptT (Writer.runWriterT program)) library
+
+    let bookOneCopiesCount = Helpers.tshow (3 :: Integer)
+
+    programOutput `shouldSatisfy` isRight
+
+    case programOutput of
+      Right (availabilityText, _)
+        | Text.isInfixOf bookOneCopiesCount availabilityText -> expectSuccess
+        | otherwise -> expectationFailure "Received wrong availability status text"
+      _ -> expectationFailure "Received wrong availability status text"
+
+bookAvailabilityDisplayUnitTest2 :: SpecWith ()
+bookAvailabilityDisplayUnitTest2 = do
+  test "A user cannot check the availability of a book that doesn't exist" $ do
+    let titleOfBookThatDoesntExist = "Title of book that doesn't exist" :: Text
+    let program = Basic.addBook bookOne >> Basic.addBook bookOne >> Basic.addBook bookOne >> Basic.displayBookAvailability titleOfBookThatDoesntExist
+    let (programOutput, _) = State.runState (Except.runExceptT (Writer.runWriterT program)) library
+
+    programOutput `shouldSatisfy` isRight
+
+    case programOutput of
+      Right (availabilityText, _)
+        | Text.isInfixOf "does not exist" availabilityText -> expectSuccess
+        | otherwise -> expectationFailure "Received wrong availability status text"
+      _ -> expectationFailure "Received wrong availability status text"
 
 -- correctInputUnitTest1 :: SpecWith ()
 -- correctInputUnitTest1 = do
@@ -247,3 +290,27 @@ bookAvailabilityDisplayUnitTest1 = return ()
 --     let input = joinWithEmptyLine $ map (intercalate "\n" . map show) listOfIntLists
 --     let expected = maximum $ map sum listOfIntLists
 --     calculateMaxCalories input === fromIntegral expected
+
+-- -------------------------------------------------------------------------- --
+--                                    Data                                    --
+-- -------------------------------------------------------------------------- --
+bookOne :: Book
+bookOne = Basic.Book{Basic.title = "Production Haskell", Basic.author = "Matt Parsons", Basic.isbn = "ISBN-13: 978-3-16-148410-0"}
+
+bookTwo :: Book
+bookTwo = Basic.Book{Basic.title = "Simple Haskell", Basic.author = "Marco Sampellegrini", Basic.isbn = "ISBN-13: 978-0-262-13472-9"}
+
+bookThree :: Book
+bookThree = Basic.Book{Basic.title = "Optics By Example", Basic.author = "Chris Penner", Basic.isbn = "ISBN-13: 978-1-566-19237-5"}
+
+patronOne :: Patron
+patronOne = Basic.Patron{Basic.name = "Michael Williams", Basic.idNumber = 67890}
+
+patronTwo :: Patron
+patronTwo = Basic.Patron{Basic.name = "Olivia Wilson", Basic.idNumber = 89012}
+
+patronThree :: Patron
+patronThree = Basic.Patron{Basic.name = "Jessica Horn", Basic.idNumber = 89012}
+
+library :: Library
+library = Basic.Library{Basic.getBookShelf = Map.empty, Basic.getBorrowLog = Map.empty}
