@@ -18,4 +18,4 @@ randomUUID :: Word -> UUID
 randomUUID = fst . random . mkStdGen . fromInteger . toInteger
 
 traverseTupleThree :: (Applicative f) => (a -> f b) -> (a, a, a) -> f (b, b, b)
-traverseTupleThree f ~(a, b, c) = (,,) <$> f a <*> f b <*> f c
+traverseTupleThree f ~(a, b, c) = ((,,) <$> f a) <*> f b <*> f c

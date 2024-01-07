@@ -79,6 +79,7 @@ type BasicStack a = WriterT [Text] (ExceptT LibrarySysError (State Library)) a
 addBook :: Book -> BasicStack LibraryEntry
 addBook newBook@(Book newBookTitle _ _) = do
   currentLibrary@(Library currentBookShelf _) <- State.get
+  o <- return ()
   let bookAvailabilityStatus = lookupBookByTitle currentBookShelf newBookTitle
 
   let (updatedBookShelf, msg, bookLibEntry) = case bookAvailabilityStatus of
